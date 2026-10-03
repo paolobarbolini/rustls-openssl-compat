@@ -156,9 +156,19 @@ pub fn named_group_to_nid(group: NamedGroup) -> Option<c_int> {
     const NID_FFDHE8192: c_int = 1130;
     // See NID_ML_KEM_* from obj_mac.h - openssl-sys does not have
     // constants for these to import.
+    #[cfg(not(feature = "awslc"))]
     const NID_ML_KEM_512: c_int = 1454;
+    #[cfg(not(feature = "awslc"))]
     const NID_ML_KEM_768: c_int = 1455;
+    #[cfg(not(feature = "awslc"))]
     const NID_ML_KEM_1024: c_int = 1456;
+    // AWS-LC has its own NIDs for ML-KEM and the hybrid groups (see nid.h)
+    #[cfg(feature = "awslc")]
+    const NID_ML_KEM_512: c_int = 988;
+    #[cfg(feature = "awslc")]
+    const NID_ML_KEM_768: c_int = 989;
+    #[cfg(feature = "awslc")]
+    const NID_ML_KEM_1024: c_int = 990;
 
     match group {
         secp256r1 => Some(NID_X9_62_prime256v1),
@@ -174,6 +184,10 @@ pub fn named_group_to_nid(group: NamedGroup) -> Option<c_int> {
         MLKEM512 => Some(NID_ML_KEM_512),
         MLKEM768 => Some(NID_ML_KEM_768),
         MLKEM1024 => Some(NID_ML_KEM_1024),
+        #[cfg(feature = "awslc")]
+        X25519MLKEM768 => Some(991),
+        #[cfg(feature = "awslc")]
+        secp256r1MLKEM768 => Some(992),
         other => Some(TLSEXT_NID_UNKNOWN | u16::from(other) as c_int),
     }
 }

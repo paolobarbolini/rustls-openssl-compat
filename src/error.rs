@@ -2,7 +2,6 @@ use core::ffi::{c_int, c_long};
 use core::ptr;
 use std::ffi::CString;
 
-use openssl_sys::{ERR_new, ERR_set_error, ERR_RFLAGS_OFFSET, ERR_RFLAG_FATAL};
 use rustls::pki_types::pem;
 use rustls::AlertDescription;
 
@@ -12,13 +11,11 @@ use rustls::AlertDescription;
 #[repr(i32)]
 enum Lib {
     /// This is `ERR_LIB_SSL`.
-    Ssl = 20,
+    Ssl = crate::sys::ERR_LIB_SSL,
 
     /// This is `ERR_LIB_USER`.
-    User = 128,
+    User = if cfg!(feature = "awslc") { 33 } else { 128 },
 }
-
-const ERR_RFLAG_COMMON: i32 = 0x2i32 << ERR_RFLAGS_OFFSET;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Reason {
@@ -30,8 +27,13 @@ enum Reason {
     Alert(AlertDescription),
 }
 
+#[cfg(not(feature = "awslc"))]
+const ERR_RFLAG_COMMON: i32 = 0x2i32 << openssl_sys::ERR_RFLAGS_OFFSET;
+
+#[cfg(not(feature = "awslc"))]
 impl From<Reason> for c_int {
     fn from(r: Reason) -> Self {
+        use openssl_sys::ERR_RFLAG_FATAL;
         use Reason::*;
         match r {
             // see `err.h.in` for magic numbers.
@@ -41,6 +43,23 @@ impl From<Reason> for c_int {
             Unsupported => ERR_RFLAG_COMMON | 268,
             WouldBlock => 0,
             // `sslerr.h`
+            Alert(alert) => 1000 + u8::from(alert) as Self,
+        }
+    }
+}
+
+#[cfg(feature = "awslc")]
+impl From<Reason> for c_int {
+    fn from(r: Reason) -> Self {
+        use Reason::*;
+        // see AWS-LC's `err.h` and `ssl.h`
+        const ERR_R_FATAL: c_int = 64;
+        match r {
+            PassedNullParameter => 3 | ERR_R_FATAL,
+            InternalError | OperationFailed => 4 | ERR_R_FATAL,
+            // SSL_R_UNSUPPORTED_PROTOCOL is the closest general reason
+            Unsupported => 248,
+            WouldBlock => 0,
             Alert(alert) => 1000 + u8::from(alert) as Self,
         }
     }
@@ -137,19 +156,7 @@ impl Error {
                 .unwrap_or_else(|| format!("{:?}", self.reason)),
         )
         .unwrap();
-        unsafe {
-            ERR_new();
-            // nb. miri cannot do variadic functions, so we define a miri-only equivalent
-            #[cfg(not(miri))]
-            ERR_set_error(
-                self.lib as c_int,
-                self.reason.into(),
-                c"%s".as_ptr(),
-                cstr.as_ptr(),
-            );
-            #[cfg(miri)]
-            crate::miri::ERR_set_error(self.lib as c_int, self.reason.into(), cstr.as_ptr());
-        }
+        unsafe { crate::sys::put_error(self.lib as c_int, self.reason.into(), &cstr) };
         self
     }
 

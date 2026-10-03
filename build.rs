@@ -11,7 +11,7 @@ fn main() {
         let filename = write_version_file();
         println!("cargo:rustc-cdylib-link-arg=-Wl,--version-script={filename}");
 
-        for symbol in ENTRYPOINTS {
+        for symbol in entrypoints() {
             // Rename underscore-prefixed symbols (produced by rust code) to
             // unprefixed symbols (manipulated by our version file).
             println!("cargo:rustc-cdylib-link-arg=-Wl,--defsym={symbol}=_{symbol}",);
@@ -26,7 +26,7 @@ fn write_version_file() -> String {
     let mut content = String::new();
     content.push_str("OPENSSL_3.0.0 {\n");
     content.push_str("    global:\n");
-    for e in ENTRYPOINTS {
+    for e in entrypoints() {
         content.push_str(&format!("        {e};\n"));
     }
     content.push_str("    local:\n");
@@ -37,6 +37,60 @@ fn write_version_file() -> String {
     println!("cargo:rerun-if-changed=build.rs");
     dest.to_str().unwrap().to_string()
 }
+
+/// Exported symbols: the OpenSSL 3 libssl ABI, plus the functions that only
+/// exist in the AWS-LC libssl ABI when building with the `awslc` feature.
+fn entrypoints() -> impl Iterator<Item = &'static &'static str> {
+    let awslc: &[&str] = match env::var_os("CARGO_FEATURE_AWSLC") {
+        Some(_) => AWSLC_ENTRYPOINTS,
+        None => &[],
+    };
+    ENTRYPOINTS.iter().chain(awslc)
+}
+
+const AWSLC_ENTRYPOINTS: &[&str] = &[
+    "SSL_CIPHER_get_cipher_nid",
+    "SSL_CIPHER_get_handshake_digest",
+    "SSL_CTX_add1_chain_cert",
+    "SSL_CTX_build_cert_chain",
+    "SSL_CTX_get_ex_new_index",
+    "SSL_CTX_get_tlsext_status_cb",
+    "SSL_CTX_set1_chain",
+    "SSL_CTX_set1_curves_list",
+    "SSL_CTX_set1_sigalgs_list",
+    "SSL_CTX_set_early_data_enabled",
+    "SSL_CTX_set_max_proto_version",
+    "SSL_CTX_set_min_proto_version",
+    "SSL_CTX_set_mode",
+    "SSL_CTX_set_select_certificate_cb",
+    "SSL_CTX_set_session_cache_mode",
+    "SSL_CTX_set_session_psk_dhe_timeout",
+    "SSL_CTX_set_tlsext_servername_arg",
+    "SSL_CTX_set_tlsext_servername_callback",
+    "SSL_CTX_set_tlsext_status_cb",
+    "SSL_CTX_set_tlsext_ticket_key_cb",
+    "SSL_early_callback_ctx_extension_get",
+    "SSL_generate_key_block",
+    "SSL_get_cipher_by_value",
+    "SSL_get_ex_new_index",
+    "SSL_get_key_block_len",
+    "SSL_get_negotiated_group",
+    "SSL_get_peer_certificate",
+    "SSL_get_read_sequence",
+    "SSL_get_read_traffic_secret",
+    "SSL_get_write_sequence",
+    "SSL_get_write_traffic_secret",
+    "SSL_in_early_data",
+    "SSL_set_early_data_enabled",
+    "SSL_set_max_proto_version",
+    "SSL_set_min_proto_version",
+    "SSL_set_renegotiate_mode",
+    "SSL_set_tlsext_host_name",
+    "SSL_set_tlsext_status_ocsp_resp",
+    "SSL_state",
+    "SSLv23_client_method",
+    "SSLv23_server_method",
+];
 
 const ENTRYPOINTS: &[&str] = &[
     "BIO_f_ssl",

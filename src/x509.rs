@@ -4,10 +4,9 @@ use std::path::PathBuf;
 use std::{fs, io};
 
 use openssl_sys::{
-    d2i_X509, i2d_X509, stack_st_X509, OPENSSL_free, OPENSSL_sk_new_null, OPENSSL_sk_num,
-    OPENSSL_sk_push, OPENSSL_sk_value, X509_STORE_add_cert, X509_STORE_free,
-    X509_STORE_get0_objects, X509_STORE_get1_all_certs, X509_STORE_new, X509_free, EVP_PKEY,
-    OPENSSL_STACK, X509, X509_STORE,
+    d2i_X509, i2d_X509, stack_st_X509, OPENSSL_free, OPENSSL_sk_new_null, X509_STORE_add_cert,
+    X509_STORE_free, X509_STORE_get0_objects, X509_STORE_new, X509_free, EVP_PKEY, OPENSSL_STACK,
+    X509, X509_STORE,
 };
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::CertificateDer;
@@ -41,15 +40,11 @@ impl OwnedX509Stack {
     pub fn new_copy(other: *const stack_st_X509) -> Self {
         let mut ret = Self::empty();
 
-        let len = match unsafe { OPENSSL_sk_num(other as *const OPENSSL_STACK) } {
-            -1 => 0,
-            x => x as usize,
-        };
+        let len = unsafe { crate::sys::sk_num(other as *const OPENSSL_STACK) };
 
         for index in 0..len {
-            let item_ptr = unsafe {
-                OPENSSL_sk_value(other as *const OPENSSL_STACK, index as c_int) as *mut X509
-            };
+            let item_ptr =
+                unsafe { crate::sys::sk_value(other as *const OPENSSL_STACK, index) as *mut X509 };
             // item_ptr belongs to caller.
             let item = OwnedX509::new(item_ptr);
             // item belongs to `OwnedX509` -- ensure caller's ref is not stolen
@@ -74,7 +69,7 @@ impl OwnedX509Stack {
     /// Add the given cert to the top (end) of the stack.
     pub fn push(&mut self, cert: &OwnedX509) {
         unsafe {
-            OPENSSL_sk_push(
+            crate::sys::sk_push(
                 self.raw as *mut OPENSSL_STACK,
                 cert.up_ref() as *const c_void,
             );
@@ -121,14 +116,11 @@ impl OwnedX509Stack {
 
     /// Plain, borrowed pointer to the item at `index`.
     fn borrowed_item(&self, index: usize) -> *mut X509 {
-        unsafe { OPENSSL_sk_value(self.raw as *const OPENSSL_STACK, index as c_int) as *mut X509 }
+        unsafe { crate::sys::sk_value(self.raw as *const OPENSSL_STACK, index) as *mut X509 }
     }
 
     fn len(&self) -> usize {
-        match unsafe { OPENSSL_sk_num(self.raw as *const OPENSSL_STACK) } {
-            -1 => 0,
-            x => x as usize,
-        }
+        unsafe { crate::sys::sk_num(self.raw as *const OPENSSL_STACK) }
     }
 }
 
@@ -147,9 +139,7 @@ impl Clone for OwnedX509Stack {
 
 impl Drop for OwnedX509Stack {
     fn drop(&mut self) {
-        unsafe {
-            OPENSSL_sk_pop_free(self.raw as *mut OPENSSL_STACK, Some(X509_free));
-        }
+        unsafe { crate::sys::sk_pop_free(self.raw as *mut OPENSSL_STACK, X509_free) };
     }
 }
 
@@ -279,7 +269,7 @@ impl OwnedX509Store {
     }
 
     pub fn to_root_store(&self) -> Result<RootCertStore, rustls::Error> {
-        let ptr = unsafe { X509_STORE_get1_all_certs(self.raw) };
+        let ptr = unsafe { crate::sys::x509_store_get1_all_certs(self.raw) };
 
         if ptr.is_null() {
             return Err(rustls::Error::General(
@@ -302,10 +292,7 @@ impl OwnedX509Store {
     }
 
     pub fn len(&self) -> usize {
-        match unsafe { OPENSSL_sk_num(X509_STORE_get0_objects(self.raw) as *const OPENSSL_STACK) } {
-            -1 | 0 => 0,
-            i => i as usize,
-        }
+        unsafe { crate::sys::sk_num(X509_STORE_get0_objects(self.raw) as *const OPENSSL_STACK) }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -366,10 +353,6 @@ pub(crate) fn load_certs<'a>(
 
 extern "C" {
     /// XXX: these missing from openssl-sys(?) investigate why that is.
-    fn OPENSSL_sk_pop_free(
-        st: *mut OPENSSL_STACK,
-        func: Option<unsafe extern "C" fn(arg1: *mut X509)>,
-    );
     fn OPENSSL_sk_dup(st: *const OPENSSL_STACK) -> *mut OPENSSL_STACK;
     fn X509_up_ref(x: *mut X509) -> c_int;
     fn X509_STORE_up_ref(xs: *mut X509_STORE) -> c_int;

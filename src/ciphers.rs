@@ -8,9 +8,7 @@
 use core::ffi::c_int;
 use core::ptr;
 
-use openssl_sys::{
-    stack_st_SSL_CIPHER, OPENSSL_sk_free, OPENSSL_sk_new_null, OPENSSL_sk_push, OPENSSL_STACK,
-};
+use openssl_sys::{stack_st_SSL_CIPHER, OPENSSL_sk_free, OPENSSL_sk_new_null, OPENSSL_STACK};
 use rustls::crypto::{aws_lc_rs as provider, SupportedKxGroup};
 use rustls::NamedGroup;
 
@@ -122,7 +120,7 @@ impl CipherStack {
             raw: raw as *mut stack_st_SSL_CIPHER,
         };
         for c in ciphers {
-            if unsafe { OPENSSL_sk_push(raw, c as *const SslCipher as *const _) } <= 0 {
+            if !unsafe { crate::sys::sk_push(raw, c as *const SslCipher as *const _) } {
                 return None;
             }
         }

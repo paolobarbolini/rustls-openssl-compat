@@ -38,6 +38,56 @@ use crate::sign::OpenSslCertifiedKey;
 use crate::x509::{load_certs, OwnedX509, OwnedX509Stack};
 use crate::{conf, HandshakeState, ShutdownResult};
 
+/// `SSL_OP_*` option words: 64 bits in OpenSSL 3, 32 bits in AWS-LC.
+#[cfg(not(feature = "awslc"))]
+type SslOptions = u64;
+#[cfg(feature = "awslc")]
+type SslOptions = u32;
+
+/// Session timeouts: `long` in OpenSSL 3, `uint32_t` in AWS-LC.
+#[cfg(not(feature = "awslc"))]
+type SslTimeout = c_long;
+#[cfg(feature = "awslc")]
+type SslTimeout = u32;
+
+fn options_from_raw(raw: u64) -> SslOptions {
+    #[cfg(not(feature = "awslc"))]
+    {
+        raw
+    }
+    #[cfg(feature = "awslc")]
+    {
+        raw as u32
+    }
+}
+
+fn options_to_raw(opts: SslOptions) -> u64 {
+    #[cfg(not(feature = "awslc"))]
+    {
+        opts
+    }
+    #[cfg(feature = "awslc")]
+    {
+        u64::from(opts)
+    }
+}
+
+/// A non-negative timeout, or `None` if negative.
+fn timeout_to_raw(t: SslTimeout) -> Option<u64> {
+    #[cfg(not(feature = "awslc"))]
+    {
+        u64::try_from(t).ok()
+    }
+    #[cfg(feature = "awslc")]
+    {
+        Some(u64::from(t))
+    }
+}
+
+fn timeout_from_raw(t: u64) -> SslTimeout {
+    t as SslTimeout
+}
+
 /// Makes a entry function definition.
 ///
 /// The body is wrapped in `ffi_panic_boundary`, the name is `#[no_mangle]`,
@@ -214,20 +264,20 @@ entry! {
 }
 
 entry! {
-    pub fn _SSL_CTX_get_options(ctx: *const SSL_CTX) -> u64 {
-        try_clone_arc!(ctx).get().get_options()
+    pub fn _SSL_CTX_get_options(ctx: *const SSL_CTX) -> SslOptions {
+        options_from_raw(try_clone_arc!(ctx).get().get_options())
     }
 }
 
 entry! {
-    pub fn _SSL_CTX_clear_options(ctx: *mut SSL_CTX, op: u64) -> u64 {
-        try_clone_arc!(ctx).get_mut().clear_options(op)
+    pub fn _SSL_CTX_clear_options(ctx: *mut SSL_CTX, op: SslOptions) -> SslOptions {
+        options_from_raw(try_clone_arc!(ctx).get_mut().clear_options(options_to_raw(op)))
     }
 }
 
 entry! {
-    pub fn _SSL_CTX_set_options(ctx: *mut SSL_CTX, op: u64) -> u64 {
-        try_clone_arc!(ctx).get_mut().set_options(op)
+    pub fn _SSL_CTX_set_options(ctx: *mut SSL_CTX, op: SslOptions) -> SslOptions {
+        options_from_raw(try_clone_arc!(ctx).get_mut().set_options(options_to_raw(op)))
     }
 }
 
@@ -250,10 +300,12 @@ entry! {
 
         match SslCtrl::try_from(cmd) {
             Ok(SslCtrl::Mode) => {
-                const RUSTLS_DEFAULT_EQUIVALENTS: c_long = SSL_MODE_AUTO_RETRY
+                // the SSL_MODE_* constants are `long` in OpenSSL and `int` in AWS-LC
+                #[allow(trivial_numeric_casts)]
+                const RUSTLS_DEFAULT_EQUIVALENTS: c_long = (SSL_MODE_AUTO_RETRY
                     | SSL_MODE_ENABLE_PARTIAL_WRITE
                     | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER
-                    | SSL_MODE_RELEASE_BUFFERS;
+                    | SSL_MODE_RELEASE_BUFFERS) as c_long;
                 match larg & !RUSTLS_DEFAULT_EQUIVALENTS {
                     // Application is requesting behaviour we already implement.
                     0 => C_INT_SUCCESS as c_long,
@@ -863,15 +915,15 @@ pub type SSL_CTX_sess_remove_cb =
     Option<unsafe extern "C" fn(ctx: *mut SSL_CTX, sess: *mut SSL_SESSION)>;
 
 entry! {
-    pub fn _SSL_CTX_get_timeout(ctx: *const SSL_CTX) -> c_long {
-        try_clone_arc!(ctx).get().get_session_timeout() as c_long
+    pub fn _SSL_CTX_get_timeout(ctx: *const SSL_CTX) -> SslTimeout {
+        timeout_from_raw(try_clone_arc!(ctx).get().get_session_timeout())
     }
 }
 
 entry! {
-    pub fn _SSL_CTX_set_timeout(ctx: *mut SSL_CTX, t: c_long) -> c_long {
-        let t = if t < 0 { 0 } else { t as u64 };
-        try_clone_arc!(ctx).get_mut().set_session_timeout(t) as c_long
+    pub fn _SSL_CTX_set_timeout(ctx: *mut SSL_CTX, t: SslTimeout) -> SslTimeout {
+        let t = timeout_to_raw(t).unwrap_or(0);
+        timeout_from_raw(try_clone_arc!(ctx).get_mut().set_session_timeout(t))
     }
 }
 
@@ -1102,20 +1154,20 @@ entry! {
 }
 
 entry! {
-    pub fn _SSL_get_options(ssl: *const SSL) -> u64 {
-        try_clone_arc!(ssl).get().get_options()
+    pub fn _SSL_get_options(ssl: *const SSL) -> SslOptions {
+        options_from_raw(try_clone_arc!(ssl).get().get_options())
     }
 }
 
 entry! {
-    pub fn _SSL_clear_options(ssl: *mut SSL, op: u64) -> u64 {
-        try_clone_arc!(ssl).get_mut().clear_options(op)
+    pub fn _SSL_clear_options(ssl: *mut SSL, op: SslOptions) -> SslOptions {
+        options_from_raw(try_clone_arc!(ssl).get_mut().clear_options(options_to_raw(op)))
     }
 }
 
 entry! {
-    pub fn _SSL_set_options(ssl: *mut SSL, op: u64) -> u64 {
-        try_clone_arc!(ssl).get_mut().set_options(op)
+    pub fn _SSL_set_options(ssl: *mut SSL, op: SslOptions) -> SslOptions {
+        options_from_raw(try_clone_arc!(ssl).get_mut().set_options(options_to_raw(op)))
     }
 }
 
@@ -1372,9 +1424,19 @@ entry! {
     }
 }
 
-pub const SSL_NOTHING: i32 = 1;
-pub const SSL_WRITING: i32 = 2;
-pub const SSL_READING: i32 = 3;
+#[cfg(not(feature = "awslc"))]
+mod want {
+    pub const SSL_NOTHING: i32 = 1;
+    pub const SSL_WRITING: i32 = 2;
+    pub const SSL_READING: i32 = 3;
+}
+#[cfg(feature = "awslc")]
+mod want {
+    pub const SSL_NOTHING: i32 = 0;
+    pub const SSL_READING: i32 = 2;
+    pub const SSL_WRITING: i32 = 3;
+}
+pub use want::*;
 
 entry! {
     pub fn _SSL_shutdown(ssl: *mut SSL) -> c_int {
@@ -2037,18 +2099,18 @@ entry! {
 }
 
 entry! {
-    pub fn _SSL_SESSION_set_timeout(sess: *mut SSL_SESSION, time_out: c_long) -> c_long {
-        if time_out < 0 {
+    pub fn _SSL_SESSION_set_timeout(sess: *mut SSL_SESSION, time_out: SslTimeout) -> SslTimeout {
+        let Some(time_out) = timeout_to_raw(time_out) else {
             return 0;
-        }
-        try_clone_arc!(sess).get_mut().set_time_out(time_out as u64);
-        C_INT_SUCCESS as c_long
+        };
+        try_clone_arc!(sess).get_mut().set_time_out(time_out);
+        C_INT_SUCCESS as SslTimeout
     }
 }
 
 entry! {
-    pub fn _SSL_SESSION_get_timeout(sess: *const SSL_SESSION) -> c_long {
-        try_clone_arc!(sess).get().get_time_out() as c_long
+    pub fn _SSL_SESSION_get_timeout(sess: *const SSL_SESSION) -> SslTimeout {
+        timeout_from_raw(try_clone_arc!(sess).get().get_time_out())
     }
 }
 
@@ -3074,3 +3136,6 @@ mod tests {
         _SSL_SESSION_free(sess_ptr);
     }
 }
+
+#[cfg(feature = "awslc")]
+include!("entry_awslc.rs");

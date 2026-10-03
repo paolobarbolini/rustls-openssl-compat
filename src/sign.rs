@@ -71,6 +71,18 @@ impl CertifiedKeySet {
         }
     }
 
+    /// Append `cert` to the current certificate chain tail.
+    #[cfg(feature = "awslc")]
+    pub fn append_chain_cert(&mut self, cert: CertificateDer<'static>) -> Result<(), error::Error> {
+        let mut tail = match self.last_algorithm {
+            Some(alg) => self.item_mut(alg).cert_chain_tail.clone(),
+            None => self.pending_cert_chain_tail.clone(),
+        }
+        .unwrap_or_default();
+        tail.push(cert);
+        self.stage_certificate_chain_tail(tail)
+    }
+
     pub fn stage_certificate_end_entity(
         &mut self,
         end: CertificateDer<'static>,

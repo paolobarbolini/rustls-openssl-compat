@@ -41,7 +41,7 @@ impl Bio {
     ///
     /// The caller donates their references, using the rules for `update()`.
     pub fn new_pair(rbio: Option<*mut BIO>, wbio: Option<*mut BIO>) -> Self {
-        let null_2 = unsafe { BIO_new(BIO_s_null()) };
+        let null_2 = unsafe { crate::sys::new_null_bio() as *mut BIO };
         unsafe { BIO_up_ref(null_2) };
         let mut ret = Self {
             read: null_2,
@@ -428,14 +428,12 @@ fn bio_in_eof(b: *const BIO) -> bool {
 }
 
 extern "C" {
-    fn BIO_new(meth: *const BIO_METHOD) -> *mut BIO;
     fn BIO_free_all(b: *mut BIO);
     fn BIO_new_fd(fd: c_int, close_flag: c_int) -> *mut BIO;
     fn BIO_read_ex(b: *mut BIO, data: *mut c_void, dlen: usize, readbytes: *mut usize) -> c_int;
     fn BIO_write_ex(b: *mut BIO, data: *const c_void, dlen: usize, written: *mut usize) -> c_int;
     fn BIO_up_ref(b: *mut BIO) -> c_int;
     fn BIO_test_flags(b: *const BIO, flags: c_int) -> c_int;
-    fn BIO_s_null() -> *const BIO_METHOD;
 }
 
 #[cfg(test)]

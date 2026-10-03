@@ -1,4 +1,4 @@
-use core::ffi::{c_char, c_int, c_long, CStr};
+use core::ffi::{c_int, c_long};
 use core::{fmt, ptr};
 use std::slice;
 
@@ -10,6 +10,8 @@ use openssl_sys::{
     RSA_PKCS1_PSS_PADDING,
 };
 use rustls::pki_types::PrivateKeyDer;
+
+use crate::sys::KeyKind;
 
 /// Safe, owning wrapper around an OpenSSL EVP_PKEY.
 #[derive(Debug)]
@@ -88,23 +90,23 @@ impl EvpPkey {
     }
 
     fn is_rsa_type(&self) -> bool {
-        self.is_a(c"RSA") || self.is_a(c"RSA-PSS")
+        self.is_a(KeyKind::Rsa) || self.is_a(KeyKind::RsaPss)
     }
 
     fn is_ecdsa_type(&self) -> bool {
-        self.is_a(c"EC")
+        self.is_a(KeyKind::Ec)
     }
 
     fn is_ed25519_type(&self) -> bool {
-        self.is_a(c"ED25519")
+        self.is_a(KeyKind::Ed25519)
     }
 
     fn is_ed448_type(&self) -> bool {
-        self.is_a(c"ED448")
+        self.is_a(KeyKind::Ed448)
     }
 
-    fn is_a(&self, which: &CStr) -> bool {
-        unsafe { EVP_PKEY_is_a(self.pkey, which.as_ptr()) == 1 }
+    fn is_a(&self, which: KeyKind) -> bool {
+        unsafe { crate::sys::evp_pkey_is(self.pkey, which) }
     }
 }
 
@@ -320,9 +322,7 @@ impl Drop for SignCtx {
     }
 }
 
-extern "C" {
-    pub fn EVP_PKEY_is_a(pkey: *const EVP_PKEY, name: *const c_char) -> c_int;
-}
+extern "C" {}
 
 #[cfg(all(test, not(miri)))]
 mod tests {

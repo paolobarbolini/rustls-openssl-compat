@@ -9,6 +9,11 @@ rust-version = "1.88"
 name = "ssl"
 crate-type = ["cdylib"]
 
+[features]
+# Build against an AWS-LC installation (OPENSSL_DIR=...) instead of OpenSSL 3,
+# exposing the AWS-LC libssl ABI.
+awslc = ["openssl-sys/bindgen"]
+
 [dependencies]
 env_logger = "0.11"
 libc = "0.2"

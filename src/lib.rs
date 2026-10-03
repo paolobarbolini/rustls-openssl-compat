@@ -51,6 +51,7 @@ mod conf;
 mod miri;
 mod not_thread_safe;
 mod sign;
+mod sys;
 mod verifier;
 mod x509;
 
@@ -464,6 +465,8 @@ pub struct SslContext {
     groups: Vec<&'static dyn SupportedKxGroup>,
     ciphers: ciphers::CipherConfig,
     max_early_data: u32,
+    #[cfg(feature = "awslc")]
+    select_certificate_cb: SelectCertificateCb,
 }
 
 impl SslContext {
@@ -498,6 +501,8 @@ impl SslContext {
             groups: provider::default_provider().kx_groups.clone(),
             ciphers: ciphers::CipherConfig::default(),
             max_early_data: 0,
+            #[cfg(feature = "awslc")]
+            select_certificate_cb: None,
         }
     }
 
@@ -533,6 +538,16 @@ impl SslContext {
 
     fn set_groups(&mut self, groups: Vec<&'static dyn SupportedKxGroup>) {
         self.groups = groups;
+    }
+
+    #[cfg(feature = "awslc")]
+    fn set_select_certificate_cb(&mut self, cb: SelectCertificateCb) {
+        self.select_certificate_cb = cb;
+    }
+
+    #[cfg(feature = "awslc")]
+    fn append_chain_cert(&mut self, cert: CertificateDer<'static>) -> Result<(), error::Error> {
+        self.auth_keys.append_chain_cert(cert)
     }
 
     fn ciphers_mut(&mut self) -> &mut ciphers::CipherConfig {
@@ -827,6 +842,36 @@ struct Ssl {
     client_hello: Option<ClientHelloData>,
     /// Bytes accepted by an `SSL_write` that must be retried.
     pending_write: Option<usize>,
+    #[cfg(feature = "awslc")]
+    select_certificate_cb: SelectCertificateCb,
+}
+
+/// AWS-LC's `select_certificate_cb`.
+#[cfg(feature = "awslc")]
+type SelectCertificateCb = Option<unsafe extern "C" fn(hello: *const SslClientHello) -> c_int>;
+
+/// AWS-LC's `SSL_CLIENT_HELLO` (`struct ssl_early_callback_ctx`).
+///
+/// Only `ssl` and `cipher_suites` are filled in: rustls does not keep the
+/// raw ClientHello.  Extensions are available through
+/// `SSL_early_callback_ctx_extension_get`.
+#[cfg(feature = "awslc")]
+#[repr(C)]
+pub struct SslClientHello {
+    pub(crate) ssl: *mut entry::SSL,
+    client_hello: *const u8,
+    client_hello_len: usize,
+    version: u16,
+    random: *const u8,
+    random_len: usize,
+    session_id: *const u8,
+    session_id_len: usize,
+    cipher_suites: *const u8,
+    cipher_suites_len: usize,
+    compression_methods: *const u8,
+    compression_methods_len: usize,
+    extensions: *const u8,
+    extensions_len: usize,
 }
 
 /// The parts of a received ClientHello that are exposed via
@@ -949,6 +994,8 @@ impl Ssl {
             ciphers: inner.ciphers.clone(),
             client_hello: None,
             pending_write: None,
+            #[cfg(feature = "awslc")]
+            select_certificate_cb: inner.select_certificate_cb,
         })
     }
 
@@ -1343,6 +1390,8 @@ impl Ssl {
 
     fn invoke_client_hello_callbacks(&mut self) -> Result<(), callbacks::CallbackFailure> {
         self.client_hello_callback.invoke()?;
+        #[cfg(feature = "awslc")]
+        self.invoke_select_certificate_cb()?;
 
         let ConnState::Accepted(accepted) = &self.conn else {
             unreachable!();
@@ -1378,6 +1427,42 @@ impl Ssl {
                 error,
                 alert: AlertDescription::InternalError,
             })
+    }
+
+    #[cfg(feature = "awslc")]
+    fn invoke_select_certificate_cb(&mut self) -> Result<(), callbacks::CallbackFailure> {
+        let Some(cb) = self.select_certificate_cb else {
+            return Ok(());
+        };
+        let ciphers = self.client_hello_ciphers().unwrap_or_default();
+        let hello = SslClientHello {
+            ssl: callbacks::SslCallbackContext::ssl_ptr(),
+            client_hello: ptr::null(),
+            client_hello_len: 0,
+            version: 0x0303,
+            random: ptr::null(),
+            random_len: 0,
+            session_id: ptr::null(),
+            session_id_len: 0,
+            cipher_suites: ciphers.as_ptr(),
+            cipher_suites_len: ciphers.len(),
+            compression_methods: ptr::null(),
+            compression_methods_len: 0,
+            extensions: ptr::null(),
+            extensions_len: 0,
+        };
+        // ssl_select_cert_success = 1, ssl_select_cert_retry = 0, ssl_select_cert_error = -1
+        match unsafe { cb(&hello) } {
+            1 => Ok(()),
+            0 => Err(callbacks::CallbackFailure {
+                error: error::Error::not_supported("select_certificate_cb requesting retry"),
+                alert: AlertDescription::InternalError,
+            }),
+            _ => Err(callbacks::CallbackFailure {
+                error: error::Error::bad_data("select_certificate_cb returned error"),
+                alert: AlertDescription::HandshakeFailure,
+            }),
+        }
     }
 
     fn client_hello_ciphers(&self) -> Option<&[u8]> {
