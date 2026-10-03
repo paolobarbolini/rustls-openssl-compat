@@ -6,6 +6,8 @@
 use core::{mem, ptr};
 use std::io::{self, Read};
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
+
+use libc::time_t;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::{fs, path::PathBuf};
@@ -1492,6 +1494,17 @@ entry! {
 }
 
 entry! {
+    pub fn _SSL_get0_group_name(ssl: *const SSL) -> *const c_char {
+        try_clone_arc!(ssl)
+            .get()
+            .get_negotiated_key_exchange_group()
+            .and_then(|group| named_group_to_tls_name(group.name()))
+            .map(|name| name.as_ptr())
+            .unwrap_or_else(ptr::null)
+    }
+}
+
+entry! {
     pub fn _SSL_version(ssl: *const SSL) -> c_int {
         try_clone_arc!(ssl)
             .get()
@@ -1952,6 +1965,24 @@ entry! {
 entry! {
     pub fn _SSL_SESSION_get_time(sess: *const SSL_SESSION) -> c_long {
         try_clone_arc!(sess).get().get_creation_time() as c_long
+    }
+}
+
+entry! {
+    pub fn _SSL_SESSION_set_time_ex(sess: *mut SSL_SESSION, time: time_t) -> time_t {
+        if time < 0 {
+            return 0;
+        }
+        try_clone_arc!(sess)
+            .get_mut()
+            .set_creation_time(time as u64);
+        time
+    }
+}
+
+entry! {
+    pub fn _SSL_SESSION_get_time_ex(sess: *const SSL_SESSION) -> time_t {
+        try_clone_arc!(sess).get().get_creation_time() as time_t
     }
 }
 

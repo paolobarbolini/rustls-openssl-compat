@@ -393,6 +393,7 @@ name = "rustls-libssl"
 version = "0.2.1"
 dependencies = [
  "env_logger",
+ "libc",
  "log",
  "openssl-probe",
  "openssl-sys",
