@@ -4,9 +4,11 @@ use std::fmt;
 
 /// An extremely bad and unsafe laundering of pointer-to-references.
 ///
-/// OpenSSL's API is specifically not thread-safe.  `SSL_CTX` and `SSL`
-/// instances must not be shared between threads.  See
-/// <https://www.openssl.org/blog/blog/2017/02/21/threads/>
+/// OpenSSL's API is specifically not thread-safe.  An `SSL` must not be
+/// used from several threads at once.  An `SSL_CTX` may be shared by `SSL`s
+/// on different threads, but must not be changed once used to create them
+/// (see `SSL_CTX_new(3)`), so code acting for an `SSL` must only `get()` it.
+/// See <https://www.openssl.org/blog/blog/2017/02/21/threads/>
 ///
 /// Because the API includes callbacks (that must be called at
 /// specific times, and may have side effects) and those callbacks can

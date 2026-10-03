@@ -1150,7 +1150,7 @@ impl Ssl {
         };
 
         config.alpn_protocols.clone_from(&self.alpn);
-        config.resumption = Resumption::store(self.ctx.get_mut().caches.get_client());
+        config.resumption = Resumption::store(self.ctx.get().caches.get_client());
 
         let client_conn = ClientConnection::new(Arc::new(config), sni_server_name.clone())
             .map_err(error::Error::from_rustls)?;
@@ -1262,7 +1262,7 @@ impl Ssl {
         }
 
         config.send_tls13_tickets = self.num_tickets;
-        let cache = self.ctx.get_mut().caches.get_server();
+        let cache = self.ctx.get().caches.get_server();
         config.session_storage = cache.clone();
 
         let ConnState::Accepted(accepted) = mem::replace(&mut self.conn, ConnState::Nothing) else {
