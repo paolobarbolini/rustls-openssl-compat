@@ -153,6 +153,11 @@ impl Error {
         self
     }
 
+    /// Whether a non-blocking BIO needs the operation to be retried.
+    pub fn is_would_block(&self) -> bool {
+        self.reason == Reason::WouldBlock
+    }
+
     /// `WouldBlock` errors never make it on the error stack.
     ///
     /// They are usual in the use of non-blocking BIOs.
