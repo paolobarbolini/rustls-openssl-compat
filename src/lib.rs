@@ -824,9 +824,86 @@ struct Ssl {
     auth_keys: sign::CertifiedKeySet,
     max_early_data: u32,
     ciphers: ciphers::CipherConfig,
+    client_hello: Option<ClientHelloData>,
     /// Bytes accepted by an `SSL_write` that must be retried.
     pending_write: Option<usize>,
 }
+
+/// The parts of a received ClientHello that are exposed via
+/// `SSL_client_hello_get0_*`, re-encoded in their wire format.
+///
+/// rustls does not retain the raw ClientHello, so the extensions
+/// are reconstructed from the parsed fields.  Only exists while
+/// the server-side accept callbacks are running.
+struct ClientHelloData {
+    ciphers: Vec<u8>,
+    extensions: Vec<(u16, Vec<u8>)>,
+}
+
+impl ClientHelloData {
+    fn new(hello: &rustls::server::ClientHello<'_>) -> Self {
+        fn u16_list(items: impl Iterator<Item = u16>) -> Vec<u8> {
+            let body: Vec<u8> = items.flat_map(u16::to_be_bytes).collect();
+            let mut out = (body.len() as u16).to_be_bytes().to_vec();
+            out.extend(body);
+            out
+        }
+
+        let mut extensions = vec![];
+
+        if let Some(name) = hello.server_name() {
+            // ServerNameList containing a single HostName entry
+            let name = name.as_bytes();
+            let mut ext = ((name.len() + 3) as u16).to_be_bytes().to_vec();
+            ext.push(0); // NameType::host_name
+            ext.extend((name.len() as u16).to_be_bytes());
+            ext.extend(name);
+            extensions.push((TLSEXT_TYPE_SERVER_NAME, ext));
+        }
+
+        if let Some(groups) = hello.named_groups() {
+            extensions.push((
+                TLSEXT_TYPE_SUPPORTED_GROUPS,
+                u16_list(groups.iter().map(|g| u16::from(*g))),
+            ));
+        }
+
+        if !hello.signature_schemes().is_empty() {
+            extensions.push((
+                TLSEXT_TYPE_SIGNATURE_ALGORITHMS,
+                u16_list(hello.signature_schemes().iter().map(|s| u16::from(*s))),
+            ));
+        }
+
+        if let Some(alpn) = hello.alpn() {
+            let body = encode_alpn(alpn);
+            let mut ext = (body.len() as u16).to_be_bytes().to_vec();
+            ext.extend(body);
+            extensions.push((TLSEXT_TYPE_ALPN, ext));
+        }
+
+        Self {
+            ciphers: hello
+                .cipher_suites()
+                .iter()
+                .flat_map(|c| u16::from(*c).to_be_bytes())
+                .collect(),
+            extensions,
+        }
+    }
+
+    fn extension(&self, typ: u16) -> Option<&[u8]> {
+        self.extensions
+            .iter()
+            .find(|(t, _)| *t == typ)
+            .map(|(_, data)| data.as_slice())
+    }
+}
+
+const TLSEXT_TYPE_SERVER_NAME: u16 = 0;
+const TLSEXT_TYPE_SUPPORTED_GROUPS: u16 = 10;
+const TLSEXT_TYPE_SIGNATURE_ALGORITHMS: u16 = 13;
+const TLSEXT_TYPE_ALPN: u16 = 16;
 
 #[allow(clippy::large_enum_variant)]
 enum ConnState {
@@ -870,6 +947,7 @@ impl Ssl {
             auth_keys: inner.auth_keys.clone(),
             max_early_data: inner.max_early_data,
             ciphers: inner.ciphers.clone(),
+            client_hello: None,
             pending_write: None,
         })
     }
@@ -1257,7 +1335,18 @@ impl Ssl {
             unreachable!();
         };
 
+        self.client_hello = Some(ClientHelloData::new(&accepted.client_hello()));
+        let result = self.invoke_client_hello_callbacks();
+        self.client_hello = None;
+        result
+    }
+
+    fn invoke_client_hello_callbacks(&mut self) -> Result<(), callbacks::CallbackFailure> {
         self.client_hello_callback.invoke()?;
+
+        let ConnState::Accepted(accepted) = &self.conn else {
+            unreachable!();
+        };
 
         self.server_name = accepted
             .client_hello()
@@ -1289,6 +1378,14 @@ impl Ssl {
                 error,
                 alert: AlertDescription::InternalError,
             })
+    }
+
+    fn client_hello_ciphers(&self) -> Option<&[u8]> {
+        self.client_hello.as_ref().map(|ch| ch.ciphers.as_slice())
+    }
+
+    fn client_hello_extension(&self, typ: u16) -> Option<&[u8]> {
+        self.client_hello.as_ref()?.extension(typ)
     }
 
     fn complete_accept(&mut self) -> Result<(), error::Error> {

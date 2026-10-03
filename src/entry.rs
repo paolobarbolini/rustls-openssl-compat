@@ -2631,17 +2631,45 @@ entry_stub! {
 // No access to individual clienthello extensions and no
 // SSL_CTX_set_client_hello_cb support
 
-entry_stub! {
+entry! {
     pub fn _SSL_client_hello_get0_ext(
-        _ssl: *mut SSL,
-        _type: c_uint,
-        _out: *mut *const c_uchar,
-        _outlen: *mut usize,
-    ) -> c_int;
+        ssl: *mut SSL,
+        typ: c_uint,
+        out: *mut *const c_uchar,
+        outlen: *mut usize,
+    ) -> c_int {
+        let ssl = try_clone_arc!(ssl);
+        let Ok(typ) = u16::try_from(typ) else {
+            return 0;
+        };
+        match ssl.get().client_hello_extension(typ) {
+            Some(data) => {
+                if !out.is_null() {
+                    unsafe { *out = data.as_ptr() };
+                }
+                if !outlen.is_null() {
+                    unsafe { *outlen = data.len() };
+                }
+                1
+            }
+            None => 0,
+        }
+    }
 }
 
-entry_stub! {
-    pub fn _SSL_client_hello_get0_ciphers(_ssl: *mut SSL, _out: *mut *const c_uchar) -> usize;
+entry! {
+    pub fn _SSL_client_hello_get0_ciphers(ssl: *mut SSL, out: *mut *const c_uchar) -> usize {
+        let ssl = try_clone_arc!(ssl);
+        match ssl.get().client_hello_ciphers() {
+            Some(data) => {
+                if !out.is_null() {
+                    unsafe { *out = data.as_ptr() };
+                }
+                data.len()
+            }
+            None => 0,
+        }
+    }
 }
 
 // No custom extension support
