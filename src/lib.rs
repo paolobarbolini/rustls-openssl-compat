@@ -812,6 +812,8 @@ struct Ssl {
     shutdown_flags: ShutdownFlags,
     auth_keys: sign::CertifiedKeySet,
     max_early_data: u32,
+    /// Bytes accepted by an `SSL_write` that must be retried.
+    pending_write: Option<usize>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -855,6 +857,7 @@ impl Ssl {
             shutdown_flags: ShutdownFlags::default(),
             auth_keys: inner.auth_keys.clone(),
             max_early_data: inner.max_early_data,
+            pending_write: None,
         })
     }
 
@@ -1306,13 +1309,62 @@ impl Ssl {
         }
     }
 
+    /// After the handshake, if the records can't all be written, this returns
+    /// `WouldBlock` like OpenSSL, and the caller must retry with the same data:
+    /// rustls already accepted it, so the retry completes the write without
+    /// taking it again.
     fn write(&mut self, slice: &[u8]) -> Result<usize, error::Error> {
-        let written = match self.conn_mut() {
+        if self.conn().is_none_or(|conn| conn.is_handshaking()) {
+            let written = match self.conn_mut() {
+                Some(conn) => conn.writer().write(slice).map_err(error::Error::from_io)?,
+                None => 0,
+            };
+            self.try_io()?;
+            return Ok(written);
+        }
+
+        if let Some(accepted) = self.pending_write {
+            // like OpenSSL, a retry must include the data already accepted
+            if slice.len() < accepted {
+                return Err(error::Error::bad_data("bad length on SSL_write retry"));
+            }
+            self.flush_tls()?;
+            self.pending_write = None;
+            return Ok(accepted);
+        }
+
+        // write any records left over first, so nothing is accepted if the BIO
+        // is not writable
+        self.flush_tls()?;
+
+        let accepted = match self.conn_mut() {
             Some(conn) => conn.writer().write(slice).map_err(error::Error::from_io)?,
             None => 0,
         };
-        self.try_io()?;
-        Ok(written)
+
+        match self.flush_tls() {
+            Ok(()) => Ok(accepted),
+            Err(e) if e.is_would_block() => {
+                self.pending_write = Some(accepted);
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Write pending records.  Unlike `try_io` this never reads, so
+    /// `SSL_get_error` can't report `WANT_READ` for a blocked write.
+    fn flush_tls(&mut self) -> Result<(), error::Error> {
+        let Some(bio) = self.bio.as_mut() else {
+            return Ok(());
+        };
+        let (ConnState::Client(conn, _) | ConnState::Server(conn, _, _)) = &mut self.conn else {
+            return Ok(());
+        };
+        while conn.wants_write() {
+            conn.write_tls(bio).map_err(error::Error::from_io)?;
+        }
+        Ok(())
     }
 
     fn read(&mut self, slice: &mut [u8]) -> Result<usize, error::Error> {
