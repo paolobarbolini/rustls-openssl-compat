@@ -1,7 +1,7 @@
 use core::ptr;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 use rustls::client::ClientSessionMemoryCache;
@@ -19,8 +19,9 @@ use crate::{callbacks, SslSession, SslSessionLookup};
 pub struct SessionCaches {
     max_size: usize,
 
-    /// the underlying client store. This outlives any given connection.
-    client: Option<Arc<dyn ClientSessionStore + Send + Sync>>,
+    /// the underlying client store, created on first use by any connection.
+    /// This outlives any given connection.
+    client: OnceLock<Arc<dyn ClientSessionStore + Send + Sync>>,
 
     /// the underlying server store. This outlives any given connection.
     server: Arc<ServerSessionStorage>,
@@ -37,7 +38,7 @@ impl SessionCaches {
         // servers in a given `SSL_CTX`) so this should be ok.
         Self {
             max_size,
-            client: None,
+            client: OnceLock::new(),
             server: Arc::new(ServerSessionStorage::new(max_size)),
         }
     }
@@ -47,8 +48,8 @@ impl SessionCaches {
     }
 
     /// Get a cache that can be used for an in-construction `ClientConnection`
-    pub fn get_client(&mut self) -> Arc<dyn ClientSessionStore + Send + Sync> {
-        Arc::clone(self.client.get_or_insert_with(|| {
+    pub fn get_client(&self) -> Arc<dyn ClientSessionStore + Send + Sync> {
+        Arc::clone(self.client.get_or_init(|| {
             Arc::new(ClientSessionMemoryCache::new(if self.max_size == 0 {
                 usize::MAX
             } else {
@@ -58,7 +59,7 @@ impl SessionCaches {
     }
 
     /// Get a cache that can be used for a single `ServerConnection`
-    pub fn get_server(&mut self) -> Arc<SingleServerCache> {
+    pub fn get_server(&self) -> Arc<SingleServerCache> {
         Arc::new(SingleServerCache::new(self.server.clone()))
     }
 
