@@ -27,6 +27,7 @@ use x509::OwnedX509Store;
 mod bio;
 mod cache;
 mod callbacks;
+mod ciphers;
 #[macro_use]
 mod constants;
 #[allow(
@@ -461,6 +462,7 @@ pub struct SslContext {
     client_hello_callback: callbacks::ClientHelloCallbackConfig,
     auth_keys: sign::CertifiedKeySet,
     groups: Vec<&'static dyn SupportedKxGroup>,
+    ciphers: ciphers::CipherConfig,
     max_early_data: u32,
 }
 
@@ -494,6 +496,7 @@ impl SslContext {
             client_hello_callback: callbacks::ClientHelloCallbackConfig::default(),
             auth_keys: sign::CertifiedKeySet::default(),
             groups: provider::default_provider().kx_groups.clone(),
+            ciphers: ciphers::CipherConfig::default(),
             max_early_data: 0,
         }
     }
@@ -526,6 +529,14 @@ impl SslContext {
 
     fn get_groups(&self) -> &[&'static dyn SupportedKxGroup] {
         &self.groups
+    }
+
+    fn set_groups(&mut self, groups: Vec<&'static dyn SupportedKxGroup>) {
+        self.groups = groups;
+    }
+
+    fn ciphers_mut(&mut self) -> &mut ciphers::CipherConfig {
+        &mut self.ciphers
     }
 
     fn get_num_tickets(&self) -> usize {
@@ -812,6 +823,7 @@ struct Ssl {
     shutdown_flags: ShutdownFlags,
     auth_keys: sign::CertifiedKeySet,
     max_early_data: u32,
+    ciphers: ciphers::CipherConfig,
     /// Bytes accepted by an `SSL_write` that must be retried.
     pending_write: Option<usize>,
 }
@@ -857,6 +869,7 @@ impl Ssl {
             shutdown_flags: ShutdownFlags::default(),
             auth_keys: inner.auth_keys.clone(),
             max_early_data: inner.max_early_data,
+            ciphers: inner.ciphers.clone(),
             pending_write: None,
         })
     }
@@ -904,6 +917,20 @@ impl Ssl {
 
     fn get_groups(&self) -> &[&'static dyn SupportedKxGroup] {
         self.ctx.get().get_groups()
+    }
+
+    fn ciphers_mut(&mut self) -> &mut ciphers::CipherConfig {
+        &mut self.ciphers
+    }
+
+    /// The crypto provider for a new connection, restricted to the configured
+    /// cipher suites and key exchange groups.
+    fn crypto_provider(&self) -> rustls::crypto::CryptoProvider {
+        rustls::crypto::CryptoProvider {
+            cipher_suites: self.ciphers.rustls_suites(),
+            kx_groups: self.get_groups().to_vec(),
+            ..provider::default_provider()
+        }
     }
 
     fn get_num_tickets(&self) -> usize {
@@ -1140,7 +1167,7 @@ impl Ssl {
             None => ServerName::try_from("0.0.0.0").unwrap(),
         };
 
-        let provider = Arc::new(provider::default_provider());
+        let provider = Arc::new(self.crypto_provider());
         let verifier = Arc::new(verifier::ServerVerifier::new(
             self.verify_x509_store.clone(),
             provider.clone(),
@@ -1273,7 +1300,7 @@ impl Ssl {
     }
 
     fn init_server_conn(&mut self) -> Result<(), error::Error> {
-        let provider = Arc::new(provider::default_provider());
+        let provider = Arc::new(self.crypto_provider());
         let verifier = Arc::new(
             verifier::ClientVerifier::new(
                 &self.verify_x509_store,
@@ -1300,6 +1327,8 @@ impl Ssl {
 
         config.alpn_protocols = mem::take(&mut self.alpn);
         config.max_early_data_size = self.max_early_data;
+        config.ignore_client_order =
+            (self.raw_options & SSL_OP_CIPHER_SERVER_PREFERENCE) == SSL_OP_CIPHER_SERVER_PREFERENCE;
 
         if let Some(ticketer) = &self.ctx.get().ticketer {
             if (self.raw_options & SSL_OP_NO_TICKET) != SSL_OP_NO_TICKET {
@@ -1976,6 +2005,7 @@ impl From<EarlyDataStatus> for c_int {
 }
 
 pub(crate) const SSL_OP_NO_TICKET: u64 = 1 << 14; // See ssl.h
+pub(crate) const SSL_OP_CIPHER_SERVER_PREFERENCE: u64 = 1 << 22; // See ssl.h
 
 #[cfg(test)]
 mod tests {

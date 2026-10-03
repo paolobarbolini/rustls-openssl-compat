@@ -312,6 +312,30 @@ entry! {
                 ctx.get_mut().set_servername_callback_context(parg);
                 C_INT_SUCCESS as c_long
             }
+            Ok(SslCtrl::SetGroups) => {
+                if larg < 0 || parg.is_null() {
+                    return 0;
+                }
+                let nids =
+                    unsafe { core::slice::from_raw_parts(parg as *const c_int, larg as usize) };
+                match crate::ciphers::groups_from_nids(nids) {
+                    Some(groups) => {
+                        ctx.get_mut().set_groups(groups);
+                        C_INT_SUCCESS as c_long
+                    }
+                    None => 0,
+                }
+            }
+            Ok(SslCtrl::SetGroupsList) => {
+                let spec = try_str!(parg as *const c_char);
+                match crate::ciphers::parse_groups_list(spec) {
+                    Some(groups) => {
+                        ctx.get_mut().set_groups(groups);
+                        C_INT_SUCCESS as c_long
+                    }
+                    None => 0,
+                }
+            }
             Ok(SslCtrl::SetSessCacheSize) => {
                 if larg < 0 {
                     return 0;
@@ -760,12 +784,21 @@ entry! {
 }
 
 entry! {
-    pub fn _SSL_CTX_set_cipher_list(_ctx: *mut SSL_CTX, s: *const c_char) -> c_int {
-        match try_str!(s) {
-            "HIGH:!aNULL:!MD5" => C_INT_SUCCESS,
-            _ => Error::not_supported("SSL_CTX_set_cipher_list")
-                .raise()
-                .into(),
+    pub fn _SSL_CTX_set_cipher_list(ctx: *mut SSL_CTX, s: *const c_char) -> c_int {
+        let spec = try_str!(s);
+        match try_clone_arc!(ctx).get_mut().ciphers_mut().set_cipher_list(spec) {
+            true => C_INT_SUCCESS,
+            false => Error::bad_data("no cipher match").raise().into(),
+        }
+    }
+}
+
+entry! {
+    pub fn _SSL_CTX_set_ciphersuites(ctx: *mut SSL_CTX, s: *const c_char) -> c_int {
+        let spec = try_str!(s);
+        match try_clone_arc!(ctx).get_mut().ciphers_mut().set_ciphersuites(spec) {
+            true => C_INT_SUCCESS,
+            false => Error::bad_data("no cipher match").raise().into(),
         }
     }
 }
@@ -1049,6 +1082,10 @@ entry! {
                 .get_negotiated_key_exchange_group()
                 .and_then(|group| named_group_to_nid(group.name()))
                 .unwrap_or(NID_undef) as c_long,
+            Ok(SslCtrl::SetGroups) | Ok(SslCtrl::SetGroupsList) => {
+                log::warn!("unimplemented SSL_set1_groups(): only SSL_CTX_set1_groups() is supported");
+                0
+            }
             // not a defined operation in the OpenSSL API
             Ok(SslCtrl::SetTlsExtServerNameCallback)
             | Ok(SslCtrl::SetTlsExtTicketKeyCallback)
@@ -1137,11 +1174,24 @@ entry! {
 }
 
 entry! {
-    pub fn _SSL_set_cipher_list(_ssl: *mut SSL, str: *const c_char) -> c_int {
-        match try_str!(str) {
-            "HIGH:!aNULL:!MD5" => C_INT_SUCCESS,
-            _ => Error::not_supported("SSL_set_cipher_list").raise().into(),
+    pub fn _SSL_set_cipher_list(ssl: *mut SSL, str: *const c_char) -> c_int {
+        let spec = try_str!(str);
+        match try_clone_arc!(ssl).get_mut().ciphers_mut().set_cipher_list(spec) {
+            true => C_INT_SUCCESS,
+            false => Error::bad_data("no cipher match").raise().into(),
         }
+    }
+}
+
+entry! {
+    pub fn _SSL_get_ciphers(ssl: *const SSL) -> *mut stack_st_SSL_CIPHER {
+        try_clone_arc!(ssl).get_mut().ciphers_mut().as_stack()
+    }
+}
+
+entry! {
+    pub fn _SSL_CTX_get_ciphers(ctx: *const SSL_CTX) -> *mut stack_st_SSL_CIPHER {
+        try_clone_arc!(ctx).get_mut().ciphers_mut().as_stack()
     }
 }
 
@@ -2246,6 +2296,8 @@ num_enum! {
         SetTlsExtHostname = 55,
         SetTlsExtTicketKeyCallback = 72,
         SetChain = 88,
+        SetGroups = 91,
+        SetGroupsList = 92,
         SetMinProtoVersion = 123,
         SetMaxProtoVersion = 124,
         GetMinProtoVersion = 130,
@@ -2316,10 +2368,6 @@ entry_stub! {
 }
 
 entry_stub! {
-    pub fn _SSL_CTX_set_ciphersuites(_ctx: *mut SSL_CTX, _s: *const c_char) -> c_int;
-}
-
-entry_stub! {
     pub fn _SSL_CTX_use_certificate_file(
         _ctx: *mut SSL_CTX,
         _file: *const c_char,
@@ -2363,10 +2411,6 @@ entry_stub! {
         _buf: *mut c_char,
         _size: c_int,
     ) -> *mut c_char;
-}
-
-entry_stub! {
-    pub fn _SSL_get_ciphers(_ssl: *const SSL) -> *mut stack_st_SSL_CIPHER;
 }
 
 entry_stub! {
