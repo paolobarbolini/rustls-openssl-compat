@@ -452,7 +452,7 @@ entry! {
         ca_file: *const c_char,
         ca_path: *const c_char,
     ) -> c_int {
-        if ca_path.is_null() && ca_path.is_null() {
+        if ca_file.is_null() && ca_path.is_null() {
             return 0;
         }
 
