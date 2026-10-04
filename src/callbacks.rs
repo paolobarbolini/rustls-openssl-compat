@@ -3,7 +3,7 @@ use core::ffi::{c_int, c_uchar, c_void};
 use core::{ptr, slice};
 use std::sync::Arc;
 
-use openssl_sys::{SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK};
+use openssl_sys::{SSL_TLSEXT_ERR_ALERT_FATAL, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK};
 use rustls::AlertDescription;
 
 use crate::entry::{
@@ -143,8 +143,24 @@ pub struct ServerNameCallbackConfig {
     pub context: *mut c_void,
 }
 
+/// A callback failed, and the handshake should be aborted with `alert`.
+#[derive(Debug)]
+pub struct CallbackFailure {
+    pub error: Error,
+    pub alert: AlertDescription,
+}
+
+impl CallbackFailure {
+    fn new(error: Error, alert: c_int) -> Self {
+        Self {
+            error,
+            alert: AlertDescription::from(alert as u8),
+        }
+    }
+}
+
 impl ServerNameCallbackConfig {
-    pub fn invoke(&self) -> Result<(), Error> {
+    pub fn invoke(&self) -> Result<(), CallbackFailure> {
         let Some(callback) = self.cb else {
             return Ok(());
         };
@@ -155,21 +171,20 @@ impl ServerNameCallbackConfig {
         let mut alert = unrecognised_name;
         let result = unsafe { callback(ssl, &mut alert as *mut c_int, self.context) };
 
-        if alert != unrecognised_name {
-            log::trace!("NYI: customised alert during servername callback");
-        }
-
         match result {
             SSL_TLSEXT_ERR_OK => Ok(()),
+            SSL_TLSEXT_ERR_ALERT_FATAL => Err(CallbackFailure::new(
+                Error::not_supported("SSL_CTX_servername_callback_func return error"),
+                alert,
+            )),
             // in practice no client does anything if SNI is not acked, and rustls
             // acks any syntactically valid extension (and ignores invalid ones, because OpenSSL)
             SSL_TLSEXT_ERR_NOACK => {
                 log::trace!("NYI: SSL_TLSEXT_ERR_NOACK returned from SSL_CTX_servername_callback_func (acking the extension anyway)");
                 Ok(())
             }
-            _ => Err(Error::not_supported(
-                "SSL_CTX_servername_callback_func return error",
-            )),
+            // like OpenSSL, carry on (without sending the warning alert TLS1.2 would)
+            _ => Ok(()),
         }
     }
 }
@@ -297,7 +312,7 @@ pub struct ClientHelloCallbackConfig {
 }
 
 impl ClientHelloCallbackConfig {
-    pub fn invoke(&self) -> Result<(), Error> {
+    pub fn invoke(&self) -> Result<(), CallbackFailure> {
         let Some(callback) = self.cb else {
             return Ok(());
         };
@@ -308,16 +323,15 @@ impl ClientHelloCallbackConfig {
         let mut alert = internal_error;
         let result = unsafe { callback(ssl, &mut alert as *mut c_int, self.context) };
 
-        if alert != internal_error {
-            log::trace!("NYI: customised alert during client hello callback");
-        }
-
         match result {
-            i if i < 0 => Err(Error::not_supported(
-                "SSL_client_hello_cb_func requesting suspension",
+            // NYI: suspension, which OpenSSL retries without an alert
+            i if i < 0 => Err(CallbackFailure::new(
+                Error::not_supported("SSL_client_hello_cb_func requesting suspension"),
+                internal_error,
             )),
-            0 => Err(Error::not_supported(
-                "SSL_client_hello_cb_func returning error",
+            0 => Err(CallbackFailure::new(
+                Error::not_supported("SSL_client_hello_cb_func returning error"),
+                alert,
             )),
             _ => Ok(()),
         }

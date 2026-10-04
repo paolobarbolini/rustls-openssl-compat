@@ -1190,6 +1190,27 @@ impl Ssl {
 
     fn invoke_accepted_callbacks(&mut self) -> Result<(), error::Error> {
         // called on transition from `Accepting` -> `Accepted`
+        if let Err(failure) = self.invoke_server_callbacks() {
+            self.send_plaintext_alert(failure.alert)?;
+            return Err(failure.error);
+        }
+
+        self.complete_accept()
+    }
+
+    /// Send a fatal alert before any encryption is established.
+    fn send_plaintext_alert(&mut self, alert: AlertDescription) -> Result<(), error::Error> {
+        // TLSPlaintext { alert(21), legacy_record_version: TLS1.2, length: 2 }
+        // Alert { level: fatal(2), description }
+        let record = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, u8::from(alert)];
+        if let Some(bio) = self.bio.as_mut() {
+            bio.write_all(&record).map_err(error::Error::from_io)?;
+            self.info_callback.invoke(callbacks::Info::AlertSent(alert));
+        }
+        Ok(())
+    }
+
+    fn invoke_server_callbacks(&mut self) -> Result<(), callbacks::CallbackFailure> {
         let ConnState::Accepted(accepted) = &self.conn else {
             unreachable!();
         };
@@ -1206,16 +1227,26 @@ impl Ssl {
         if let Some(alpn_iter) = accepted.client_hello().alpn() {
             let offer = encode_alpn(alpn_iter);
 
-            let choice = self.alpn_callback.invoke(&offer)?;
+            let choice =
+                self.alpn_callback
+                    .invoke(&offer)
+                    .map_err(|error| callbacks::CallbackFailure {
+                        error,
+                        alert: AlertDescription::NoApplicationProtocol,
+                    })?;
 
             if let Some(choice) = choice {
                 self.alpn = vec![choice];
             }
         }
 
-        self.cert_callback.invoke()?;
-
-        self.complete_accept()
+        // nb. this includes suspension (NYI), which OpenSSL retries without an alert
+        self.cert_callback
+            .invoke()
+            .map_err(|error| callbacks::CallbackFailure {
+                error,
+                alert: AlertDescription::InternalError,
+            })
     }
 
     fn complete_accept(&mut self) -> Result<(), error::Error> {
