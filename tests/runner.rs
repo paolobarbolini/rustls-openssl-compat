@@ -326,6 +326,27 @@ fn ciphers() {
 
 #[test]
 #[ignore]
+fn set_ssl_ctx() {
+    let openssl_output = Command::new("tests/maybe-valgrind.sh")
+        .args(["target/set_ssl_ctx"])
+        .env("LD_LIBRARY_PATH", "")
+        .stdout(Stdio::piped())
+        .output()
+        .map(print_output)
+        .unwrap();
+
+    let rustls_output = Command::new("tests/maybe-valgrind.sh")
+        .args(["target/set_ssl_ctx"])
+        .stdout(Stdio::piped())
+        .output()
+        .map(print_output)
+        .unwrap();
+
+    assert_eq!(openssl_output, rustls_output);
+}
+
+#[test]
+#[ignore]
 fn write_retry() {
     let openssl_output = Command::new("tests/maybe-valgrind.sh")
         .args(["target/write_retry"])

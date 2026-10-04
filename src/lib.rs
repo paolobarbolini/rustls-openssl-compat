@@ -874,6 +874,11 @@ impl Ssl {
     }
 
     fn set_ctx(&mut self, ctx: Arc<NotThreadSafe<SslContext>>) {
+        // like OpenSSL, switching to the current context changes nothing
+        if Arc::ptr_eq(&self.ctx, &ctx) {
+            return;
+        }
+
         // there are no docs for `SSL_set_SSL_CTX`.  it seems the only
         // meaningful reason to use this is key/certificate switching
         // (eg, based on SNI).  So only bother updating `auth_keys`
