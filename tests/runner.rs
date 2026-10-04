@@ -305,6 +305,27 @@ fn constants() {
 
 #[test]
 #[ignore]
+fn alerts() {
+    let openssl_output = Command::new("tests/maybe-valgrind.sh")
+        .args(["target/alerts"])
+        .env("LD_LIBRARY_PATH", "")
+        .stdout(Stdio::piped())
+        .output()
+        .map(print_output)
+        .unwrap();
+
+    let rustls_output = Command::new("tests/maybe-valgrind.sh")
+        .args(["target/alerts"])
+        .stdout(Stdio::piped())
+        .output()
+        .map(print_output)
+        .unwrap();
+
+    assert_eq!(openssl_output, rustls_output);
+}
+
+#[test]
+#[ignore]
 fn ciphers() {
     let openssl_output = Command::new("tests/maybe-valgrind.sh")
         .args(["target/ciphers"])

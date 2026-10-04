@@ -15,7 +15,7 @@ use openssl_sys::{
 use rustls::client::Resumption;
 use rustls::crypto::{aws_lc_rs as provider, SupportedKxGroup};
 use rustls::pki_types::{CertificateDer, ServerName};
-use rustls::server::{Accepted, Acceptor, ProducesTickets};
+use rustls::server::{Accepted, AcceptedAlert, Acceptor, ProducesTickets};
 use rustls::{
     AlertDescription, CipherSuite, ClientConfig, ClientConnection, Connection, HandshakeKind,
     ProtocolVersion, ServerConfig, SignatureScheme, SupportedProtocolVersion,
@@ -1284,10 +1284,15 @@ impl Ssl {
             unreachable!();
         };
 
-        // TODO: send alert
-        let server_conn = accepted
-            .into_connection(Arc::new(config))
-            .map_err(|(err, _alert)| error::Error::from_rustls(err))?;
+        let server_conn = match accepted.into_connection(Arc::new(config)) {
+            Ok(conn) => conn,
+            Err((err, alert)) => {
+                if let Some(bio) = self.bio.as_mut() {
+                    write_accepted_alert(bio, &self.info_callback, alert)?;
+                }
+                return Err(error::Error::from_rustls(err));
+            }
+        };
 
         self.conn = ConnState::Server(server_conn.into(), verifier, cache);
         Ok(())
@@ -1447,18 +1452,8 @@ impl Ssl {
                     match acceptor.accept() {
                         Ok(Some(accepted)) => break accepted,
                         Ok(None) => {}
-                        Err((error, mut alert)) => {
-                            let mut buffer = Vec::new();
-                            alert.write_all(&mut buffer).unwrap();
-
-                            // this only works for unencrypted alerts (header plus `Alert` structure)
-                            if buffer.len() == (5 + 2) {
-                                self.info_callback.invoke(callbacks::Info::AlertSent(
-                                    AlertDescription::from(buffer[6]),
-                                ));
-                            }
-
-                            bio.write_all(&buffer).map_err(error::Error::from_io)?;
+                        Err((error, alert)) => {
+                            write_accepted_alert(bio, &self.info_callback, alert)?;
                             return Err(error::Error::from_rustls(error));
                         }
                     }
@@ -1717,6 +1712,25 @@ impl Ssl {
             _ => ptr::null_mut(),
         }
     }
+}
+
+/// Write an alert rustls produced while accepting a connection.
+fn write_accepted_alert(
+    bio: &mut bio::Bio,
+    info_callback: &callbacks::InfoCallbackConfig,
+    mut alert: AcceptedAlert,
+) -> Result<(), error::Error> {
+    let mut buffer = Vec::new();
+    alert.write_all(&mut buffer).unwrap();
+
+    // this only works for unencrypted alerts (header plus `Alert` structure)
+    if buffer.len() == (5 + 2) {
+        info_callback.invoke(callbacks::Info::AlertSent(AlertDescription::from(
+            buffer[6],
+        )));
+    }
+
+    bio.write_all(&buffer).map_err(error::Error::from_io)
 }
 
 /// Encode rustls's internal representation in the wire format.
