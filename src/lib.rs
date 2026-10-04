@@ -873,17 +873,24 @@ impl Ssl {
         self.ex_data.get(idx)
     }
 
-    fn set_ctx(&mut self, ctx: Arc<NotThreadSafe<SslContext>>) {
+    /// Like OpenSSL, the certificates and keys, certificate callback,
+    /// verification store and ALPN callback come from the new context, and
+    /// what `SSL_new` copied into the `SSL` is kept.  Unlike OpenSSL, the
+    /// session cache and ticket keys follow too, the servername and info
+    /// callbacks don't.
+    fn set_ctx(&mut self, ctx: Arc<NotThreadSafe<SslContext>>) -> Result<(), error::Error> {
         // like OpenSSL, switching to the current context changes nothing
         if Arc::ptr_eq(&self.ctx, &ctx) {
-            return;
+            return Ok(());
         }
 
-        // there are no docs for `SSL_set_SSL_CTX`.  it seems the only
-        // meaningful reason to use this is key/certificate switching
-        // (eg, based on SNI).  So only bother updating `auth_keys`
-        self.ctx = ctx.clone();
-        self.auth_keys = ctx.get().auth_keys.clone();
+        let inner = ctx.get();
+        self.verify_x509_store = Self::load_verify_certs(inner)?;
+        self.auth_keys = inner.auth_keys.clone();
+        self.cert_callback = inner.cert_callback.clone();
+        self.alpn_callback = inner.alpn_callback.clone();
+        self.ctx = ctx;
+        Ok(())
     }
 
     fn get_options(&self) -> u64 {
