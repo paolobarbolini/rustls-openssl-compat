@@ -1556,8 +1556,10 @@ entry! {
 entry! {
     pub fn _SSL_set_SSL_CTX(ssl: *mut SSL, ctx_ptr: *mut SSL_CTX) -> *mut SSL_CTX {
         let ctx = try_clone_arc!(ctx_ptr);
-        try_clone_arc!(ssl).get_mut().set_ctx(ctx);
-        ctx_ptr
+        match try_clone_arc!(ssl).get_mut().set_ctx(ctx) {
+            Ok(()) => ctx_ptr,
+            Err(_) => ptr::null_mut(),
+        }
     }
 }
 
